@@ -1,15 +1,19 @@
+import os
 import re
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import solcx
+import brownie
+import pytest
 from py_solidity_parser.main import from_standard_output
 
 from utils.prompt import prompt_template
 from utils.compile_sol import compile_contract_standard
 from utils.filters import CONTRACTS_FILTER
 from utils.placeholders import ph_llm_response, ph_contract_source
+from utils.parsers import parse_cov_lines
 
 # Read a random parquet file
 table = pq.read_table('slither-audited-smart-contracts/data/raw/contracts0.parquet')
@@ -22,6 +26,7 @@ contract = pd_table.sample()
 
 # Get source code.
 # source_code = contract.iloc[0, 1]
+contract_address = contract.iloc[0, 0]
 # TODO: Remove temporary placeholder source code used for testing
 source_code = ph_contract_source
 
@@ -63,7 +68,7 @@ delimiters = main_contract.src.split(':')
 main_contract_source = source_code[int(delimiters[0]):int(delimiters[0]) + int(delimiters[1])]
 
 # Get the functions for which we want to generate unit tests
-functions = [item.name for item in main_contract.children() if item.nodeType == 'FunctionDefinition' and item.name != '']
+functions = [item.name for item in main_contract.children() if item.nodeType == 'FunctionDefinition' and item.name != '' and item.visibility in ['public', 'external']]
 
 # Construct prompt
 prompt = prompt_template % (functions, main_contract_source)
@@ -72,8 +77,36 @@ prompt = prompt_template % (functions, main_contract_source)
 # TODO: Remove temporary placeholder
 test_code = ph_llm_response
 
-# Save resulting code to a python file
+# Create Brownie project directory
+if not os.path.isdir(f"brownie_projects/p_{contract_address}"):
+    os.makedirs(f"brownie_projects/p_{contract_address}")
 
-# Load into Brownie and run
+# Initialize Brownie project
+brownie.project.new(f"brownie_projects/p_{contract_address}")
 
-# Assess coverage
+# Write contract to Brownie project
+with open(f"brownie_projects/p_{contract_address}/contracts/Contract.sol", "w") as f:
+    f.write(source_code)
+
+# Write tests to Brownie project
+# Note: test filenames must be in one of the following formats "test_*.py" or "_test.py"
+with open(f"brownie_projects/p_{contract_address}/tests/llm_test.py", "w") as f:
+    f.write(test_code)
+
+# Load & Compile project using Brownie
+b_project = brownie.project.load(f"brownie_projects/p_{contract_address}", name="Contract")
+
+# Run tests and assess coverage
+os.chdir(f"brownie_projects/p_{contract_address}")
+try:
+    pytest.main(['tests/'])
+except:
+    print("Pytest raised error during testing.")
+os.chdir(f"../..")
+# brownie.test.coverage.get_coverage_eval()
+coverage_lines = brownie.test.output._build_coverage_output(brownie.test.coverage.get_merged_coverage_eval())
+contract_cov, func_cov = parse_cov_lines(coverage_lines)
+
+# Print results
+print(f"Contract coverage: {contract_cov}")
+print(f"Function coverage: {func_cov}")
