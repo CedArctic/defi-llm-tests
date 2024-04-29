@@ -1,3 +1,5 @@
 venv
 slither-audited-smart-contracts
 unit_tests
+brownie_projects
+**__pycache__**
